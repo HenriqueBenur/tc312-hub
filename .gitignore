@@ -1,0 +1,29 @@
+# --- dados pessoais / da máquina (NUNCA publicar) ---
+# capturas USB contêm o que foi digitado; backups são do teclado desta máquina
+re/captures/
+re/backups/
+release/
+.venv/
+*.pcap
+*.pcapng
+
+# --- chaves de assinatura do atualizador ---
+*.key
+.tauri-signing/
+
+# --- build ---
+app/node_modules/
+app/dist/
+app/src-tauri/target/
+app/src-tauri/gen/
+
+# --- skills de terceiros (reinstaláveis por scripts/install-skills.ps1) ---
+.claude/skills/*
+!.claude/skills/tc312-protocolo/
+!.claude/skills/third-party-skills.lock.json
+.claude/settings.local.json
+
+# --- sistema ---
+Thumbs.db
+desktop.ini
+*.log
