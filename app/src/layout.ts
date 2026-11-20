@@ -10,6 +10,8 @@ export interface PhysKey {
   w: number;
   h: number;
   label: string;
+  /** desenho no lugar do texto (ex.: a lâmpada da tecla de iluminação) */
+  icon?: "bulb";
 }
 
 export const LAYOUT: PhysKey[] = data as PhysKey[];

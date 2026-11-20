@@ -44,21 +44,80 @@ struct WriteResult {
 }
 
 /// O MK1 Elite conflita com o app: manda ~175 pacotes/s e regrava o Win-lock.
+/// Consulta a lista de processos direto no Windows (até a 1.1.0 rodava `tasklist` escondido
+/// a cada 2 s, o que o antivírus vê como comportamento suspeito).
 fn official_app_running() -> bool {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq MK1 Elite.exe", "/NH"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("MK1 Elite"))
-            .unwrap_or(false)
+        procs::running("mk1 elite.exe")
     }
     #[cfg(not(windows))]
     {
         false
+    }
+}
+
+#[cfg(windows)]
+mod procs {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct ProcessEntry32W {
+        size: u32,
+        usage: u32,
+        pid: u32,
+        default_heap: usize,
+        module_id: u32,
+        threads: u32,
+        parent_pid: u32,
+        pri_class_base: i32,
+        flags: u32,
+        exe_file: [u16; 260],
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut c_void;
+        fn Process32FirstW(snap: *mut c_void, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snap: *mut c_void, entry: *mut ProcessEntry32W) -> i32;
+        fn CloseHandle(h: *mut c_void) -> i32;
+    }
+
+    const TH32CS_SNAPPROCESS: u32 = 0x2;
+
+    /// Há algum processo com este nome de executável (sem diferenciar maiúsculas)?
+    pub fn running(exe_lower: &str) -> bool {
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap.is_null() || snap as isize == -1 {
+                return false;
+            }
+            let mut e: ProcessEntry32W = std::mem::zeroed();
+            e.size = std::mem::size_of::<ProcessEntry32W>() as u32;
+            let mut found = false;
+            let mut ok = Process32FirstW(snap, &mut e) != 0;
+            while ok {
+                let len = e.exe_file.iter().position(|&c| c == 0).unwrap_or(e.exe_file.len());
+                if String::from_utf16_lossy(&e.exe_file[..len]).to_lowercase() == exe_lower {
+                    found = true;
+                    break;
+                }
+                ok = Process32NextW(snap, &mut e) != 0;
+            }
+            CloseHandle(snap);
+            found
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn finds_own_process_and_not_a_fake_one() {
+            let me = std::env::current_exe().unwrap();
+            let name = me.file_name().unwrap().to_string_lossy().to_lowercase();
+            assert!(super::running(&name), "deveria achar o próprio processo {name}");
+            assert!(!super::running("nao-existe-tc312.exe"));
+        }
     }
 }
 

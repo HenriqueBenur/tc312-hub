@@ -130,12 +130,13 @@ export function KeysPage({
       <div className="page">
         <KeyboardStage
           visual={(k) => {
-            if (!draft) return { label: k.label, disabled: k.m === FN_SLOT };
+            if (!draft) return { label: k.label, icon: k.icon, disabled: k.m === FN_SLOT };
             const raw = slotRaw(draft, k.m);
             const a = decodeRaw(raw);
             const vk = hidToVk(a);
             return {
               label: a.kind === "unknown" ? k.label : actionLabel(a),
+              icon: a.kind === "light" || (a.kind === "unknown" && k.icon) ? "bulb" : undefined,
               changed: !!factoryHex && raw !== slotRaw(factoryHex, k.m),
               pending: raw !== slotRaw(applied, k.m),
               lit: testing && vk !== null && litVks.has(vk),

@@ -36,6 +36,14 @@ export const IconLight = (p: P) => (
   </Svg>
 );
 
+/** Lâmpada: a tecla de iluminação do Warrior. */
+export const IconBulb = (p: P) => (
+  <Svg {...p}>
+    <path d="M9 18.5h6M10 21.5h4" />
+    <path d="M12 2.5a6.5 6.5 0 0 0-3.9 11.7c.7.6 1.2 1.4 1.3 2.3h5.2c.1-.9.6-1.7 1.3-2.3A6.5 6.5 0 0 0 12 2.5z" />
+  </Svg>
+);
+
 export const IconMacro = (p: P) => (
   <Svg {...p}>
     <path d="M4 6h10M4 12h7M4 18h10" />

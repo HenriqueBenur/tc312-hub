@@ -1,5 +1,20 @@
 # Histórico de versões
 
+## [1.1.1] — 2026-11-20
+
+### Antivírus
+O Windows Defender colocou a 1.1.0 instalada em quarentena como `Trojan:Win32/Bearfoos.A!ml`.
+- É uma detecção heurística (aprendizado de máquina): o próprio Defender examinou o mesmo arquivo e não achou ameaça.
+- Esta versão tira dois comportamentos que a heurística confunde com malware:
+  - **Teclado:** o app só se registra para receber as teclas enquanto o "Testar teclas" ou o cão de guarda de um efeito do app estiver ligado.
+    Antes ele ficava registrado desde a abertura, o que parece um keylogger para o antivírus.
+  - **MK1 Elite:** a detecção agora consulta a lista de processos direto no Windows.
+    Antes rodava o `tasklist` escondido a cada 2 segundos.
+- O executável continua sem assinatura digital, então um novo alarme ainda pode acontecer.
+
+### Interface
+- A tecla ao lado do Fn (antes "Menu?") é a tecla de iluminação do Warrior: agora aparece com o desenho de uma lâmpada.
+
 ## [1.1.0] — 2026-11-20
 
 ### Novidades

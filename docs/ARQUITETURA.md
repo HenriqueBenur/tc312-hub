@@ -24,7 +24,8 @@ app/
         ├── effects.rs    motor de efeitos do app: paletas, quadros 0x12 (~18/s), cão de guarda, pausa com o MK1 Elite
         ├── storage.rs    settings.json (gravação atômica e com trava), perfis, backups (40), log
         ├── macros.rs     macros por software: RegisterHotKey(F13–F24, também com Shift/Ctrl/Alt) + SendInput
-        ├── keytest.rs    Raw Input numa janela invisível, filtrado pelo VID do Warrior; conta eventos estranhos
+        ├── keytest.rs    Raw Input numa janela invisível, filtrado pelo VID do Warrior; conta eventos estranhos.
+        │                 Só registra enquanto o teste ou o cão de guarda estiver ligado (RIDEV_REMOVE fora disso)
         └── lib.rs        comandos Tauri, bandeja, instância única, plugins de atualização
 ```
 
@@ -36,6 +37,8 @@ app/
    - Há teste para cada efeito e paleta.
 5. Nunca abre VID 0x046D (Logitech). Nenhum comando de firmware ou bootloader existe no código.
 6. Recusa falar com o teclado enquanto o MK1 Elite estiver aberto. O motor de efeitos pausa.
+   A detecção usa `CreateToolhelp32Snapshot`, sem criar processos.
+7. Não fica escutando o teclado em segundo plano: o Raw Input só fica registrado com o "Testar teclas" ou um efeito do app ligado.
 
 ## Efeitos do app (paletas)
 O firmware só guarda modo, cor e "multicolor". Paletas de 2 e 3 cores (e algumas variações) são desenhadas em Rust (`effects.rs`).

@@ -1,9 +1,12 @@
 //! "Testar teclas": mostra o que o Warrior realmente envia ao Windows.
 //!
-//! Uma janela invisível (message-only) recebe Raw Input de todos os teclados com
-//! RIDEV_INPUTSINK; só os eventos cujo dispositivo é VID_320F&PID_5078 são repassados
-//! à interface (evento "warrior-key"), e só enquanto o teste estiver ligado.
-//! O teclado Logitech é ignorado. Nada é bloqueado nem alterado: é só observação.
+//! Uma janela invisível (message-only) recebe Raw Input com RIDEV_INPUTSINK, mas **só
+//! enquanto alguém precisa**: a tela "Testar teclas" ligada ou o cão de guarda de um
+//! efeito do app. Fora disso o registro é removido (RIDEV_REMOVE) e o app não recebe
+//! nenhuma tecla (desde a 1.1.1; antes o registro ficava ativo o tempo todo, o que o
+//! antivírus confunde com keylogger).
+//! Só os eventos cujo dispositivo é VID_320F&PID_5078 são considerados; o Logitech é
+//! ignorado. Nada é gravado em disco nem enviado: é só observação na hora.
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::OnceLock;
@@ -38,16 +41,16 @@ pub struct HidEvent {
 
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::SeqCst);
-    if on {
-        reregister();
-    }
+    reregister();
 }
 
 pub fn set_watch(on: bool) {
     WATCH.store(on, Ordering::SeqCst);
-    if on {
-        reregister();
-    }
+    reregister();
+}
+
+fn needed() -> bool {
+    ENABLED.load(Ordering::SeqCst) || WATCH.load(Ordering::SeqCst)
 }
 
 /// Eventos estranhos vindos do Warrior desde que o app abriu (tecla sem código, mouse, sistema).
@@ -55,8 +58,9 @@ pub fn anomaly_count() -> u32 {
     ANOMALIES.load(Ordering::SeqCst)
 }
 
-/// O registro de Raw Input é por processo: se outra parte do app (a janela do Tauri) registrar
-/// teclado/mouse depois, nossa janela deixa de receber. Ao ligar o teste, registra de novo.
+/// Liga ou desliga o registro de Raw Input conforme a necessidade (na thread da janela).
+/// O registro é por processo: se outra parte do app registrar teclado/mouse depois, nossa
+/// janela deixa de receber; por isso cada mudança registra de novo.
 fn reregister() {
     #[cfg(windows)]
     win::post_reregister(HWND.load(Ordering::SeqCst));
@@ -161,6 +165,7 @@ mod win {
     const RID_INPUT: u32 = 0x1000_0003;
     const RIDI_DEVICENAME: u32 = 0x2000_0007;
     const RIDEV_INPUTSINK: u32 = 0x100;
+    const RIDEV_REMOVE: u32 = 0x1;
     const RIM_TYPEMOUSE: u32 = 0;
     const RIM_TYPEKEYBOARD: u32 = 1;
     const RIM_TYPEHID: u32 = 2;
@@ -192,10 +197,14 @@ mod win {
 
     unsafe extern "system" fn wndproc(h: Hwnd, m: u32, w: usize, l: isize) -> isize {
         if m == WM_APP_REREGISTER {
-            unsafe { register(h) };
+            if needed() {
+                unsafe { register(h) };
+            } else {
+                unsafe { unregister() };
+            }
             return 0;
         }
-        if m == WM_INPUT && (ENABLED.load(Ordering::SeqCst) || WATCH.load(Ordering::SeqCst)) {
+        if m == WM_INPUT && needed() {
             unsafe { handle_input(l) };
         }
         unsafe { DefWindowProcW(h, m, w, l) }
@@ -203,6 +212,14 @@ mod win {
 
     fn anomaly() {
         ANOMALIES.fetch_add(1, Ordering::SeqCst);
+    }
+
+    const USAGES: [(u16, u16); 4] = [(0x01, 0x06), (0x01, 0x02), (0x0C, 0x01), (0x01, 0x80)];
+
+    /// Remove o registro: o processo deixa de receber teclado, mouse, mídia e sistema.
+    unsafe fn unregister() -> bool {
+        let rids = USAGES.map(|(usage_page, usage)| RawInputDevice { usage_page, usage, flags: RIDEV_REMOVE, target: null_mut() });
+        unsafe { RegisterRawInputDevices(rids.as_ptr(), rids.len() as u32, std::mem::size_of::<RawInputDevice>() as u32) != 0 }
     }
 
     /// teclado, mouse, mídia (consumer) e controle de sistema
@@ -299,9 +316,9 @@ mod win {
             return;
         }
         HWND.store(hwnd as isize, Ordering::SeqCst);
-        if !unsafe { register(hwnd) } {
+        // Sem registro até alguém precisar (teste ou cão de guarda já pedidos antes desta linha).
+        if needed() && !unsafe { register(hwnd) } {
             eprintln!("[tc312] keytest: RegisterRawInputDevices falhou");
-            return;
         }
         let mut msg: Msg = unsafe { std::mem::zeroed() };
         while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {

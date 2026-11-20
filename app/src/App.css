@@ -227,6 +227,7 @@ p { margin: 0 0 8px; }
   overflow-wrap: anywhere; pointer-events: none;
   text-shadow: 0 1px 0 rgb(0 0 0 / 0.5);
 }
+.key-icon { width: clamp(12px, calc(var(--u) * 0.34), 22px); height: auto; pointer-events: none; filter: drop-shadow(0 1px 0 rgb(0 0 0 / 0.5)); }
 .key.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(255 122 26 / 0.35), 0 calc(var(--u) * 0.06) 0 #060a0c; }
 .key.changed::before {
   content: ""; position: absolute; left: 50%; bottom: calc(var(--u) * 0.1); width: calc(var(--u) * 0.26); height: 2px;

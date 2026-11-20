@@ -51,6 +51,8 @@ export function actionLabel(a: KeyAction): string {
       return CONSUMER[a.usage] ?? `Mídia 0x${a.usage.toString(16).padStart(4, "0")}`;
     case "fn":
       return "Fn";
+    case "light":
+      return "Iluminação";
     case "empty":
       return "—";
     default:
@@ -65,6 +67,7 @@ export function actionKindLabel(a: KeyAction): string {
     modifier: "Modificador",
     consumer: "Mídia",
     fn: "Função (Fn)",
+    light: "Iluminação do teclado",
     empty: "Desativada",
     unknown: "Não identificado",
   }[a.kind];
@@ -86,6 +89,9 @@ export function decodeRaw(raw: string): KeyAction {
   if (t === 0x20 && b === 0) return { kind: "modifier", mask: a };
   if (t === 0x30) return { kind: "consumer", usage: a | (b << 8) };
   if (t === 0xa0 && a === 0x01 && b === 0) return { kind: "fn" };
+  // a0 11 00: tecla de iluminação (a da lâmpada, ao lado do Fn). Legenda física informada
+  // pela pessoa; o que o firmware faz com ela não foi testado pelo app.
+  if (t === 0xa0 && a === 0x11 && b === 0) return { kind: "light" };
   return { kind: "unknown" };
 }
 

@@ -237,7 +237,7 @@ export function LightingPage({
 
       <div className="page">
         <KeyboardStage
-          visual={(k) => ({ label: k.label })}
+          visual={(k) => ({ label: k.label, icon: k.icon })}
           led={led}
           live={!isCustom}
           glow={isCustom ? 1 : 0.85}

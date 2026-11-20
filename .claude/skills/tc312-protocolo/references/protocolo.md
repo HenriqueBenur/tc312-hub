@@ -84,11 +84,12 @@ e decodificado em `docs/keymap_padrao_decodificado.txt`.
 | modificador | `20 mm 00` (bitmask) | `20 08 00` LWin, `20 40 00` AltGr |
 | mídia | `30 lo hi` (uso consumer) | `30 e9 00` volume + |
 | Fn | `a0 01 00` | posição à direita do AltGr |
-| ? | `a0 11 00`, `d0 a2 nn` | [hipótese] Fn2/menu e funções de LED da camada Fn |
+| iluminação | `a0 11 00` | [legenda física informada pela pessoa] tecla da lâmpada, à direita do Fn (posição 93); o que o firmware faz com ela não foi testado |
+| ? | `d0 a2 nn` | [hipótese] funções de LED da camada Fn |
 
 Linhas da matriz (colunas 0→15): 0 = Esc, F1…F12, PrtSc, ScrLk, Pause · 1 = aspas, 1…0, -, =, Backspace, Insert, Home ·
 2 = Tab, Q…P, acento agudo, [, ], Delete, End · 3 = Caps, A…Ç, ~, ], Enter, PgUp, PgDn · 4 = LShift, \|, Z…;, /?, RShift, ↑ ·
-5 = LCtrl, LWin, LAlt, (Lang2, Intl5), Espaço, (Intl4, Intl2, Lang1), AltGr, Fn, a0-11, RCtrl, ←, ↓, → · 6–7 = teclado
+5 = LCtrl, LWin, LAlt, (Lang2, Intl5), Espaço, (Intl4, Intl2, Lang1), AltGr, Fn, iluminação (a0 11), RCtrl, ←, ↓, → · 6–7 = teclado
 numérico e funções de mídia (posições que não existem no TKL).
 
 ## 7. Eventos espontâneos do teclado (interface 1, report ID 3) — [verificado]

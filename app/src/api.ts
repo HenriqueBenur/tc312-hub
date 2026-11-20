@@ -6,6 +6,7 @@ export type KeyAction =
   | { kind: "modifier"; mask: number }
   | { kind: "consumer"; usage: number }
   | { kind: "fn" }
+  | { kind: "light" }
   | { kind: "empty" }
   | { kind: "unknown" };
 

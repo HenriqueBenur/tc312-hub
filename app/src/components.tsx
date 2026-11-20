@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { LAYOUT, LAYOUT_HEIGHT, LAYOUT_WIDTH, type PhysKey } from "./layout";
 import type { RGB } from "./effects";
-import { IconClose } from "./icons";
+import { IconBulb, IconClose } from "./icons";
 
 export interface KeyVisual {
   label: string;
@@ -12,6 +12,8 @@ export interface KeyVisual {
   /** destaque do teste de teclas */
   lit?: boolean;
   disabled?: boolean;
+  /** desenho no lugar do texto */
+  icon?: "bulb";
 }
 
 /** Cor do LED de cada tecla: fixa (função de `m`) ou animada (função de `m` e do tempo). */
@@ -141,7 +143,11 @@ export function KeyboardStage({
               onPointerEnter={() => paint && painting.current && paint(k)}
               title={k.label === v.label ? k.label : `${k.label} → ${v.label}`}
             >
-              <span className="key-label">{v.label}</span>
+              {v.icon === "bulb" ? (
+                <IconBulb className="key-icon" aria-label={v.label} />
+              ) : (
+                <span className="key-label">{v.label}</span>
+              )}
               {v.pending && <span className="key-dot" />}
             </button>
           );
