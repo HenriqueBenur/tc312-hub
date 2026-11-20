@@ -23,7 +23,15 @@ function decode(hex: string) {
 
 export function installDevMock() {
   let keymapHex = FACTORY;
-  const settings: Record<string, unknown> = { keymapHex: null, lighting: null, customColorsHex: null, macros: [], activeProfile: null };
+  const settings: Record<string, unknown> = {
+    keymapHex: null,
+    lighting: null,
+    customColorsHex: null,
+    macros: [{ slot: 0, name: "Assinatura de e-mail", steps: [{ type: "text", text: "Abraço," }], repeat: 1 }],
+    activeProfile: null,
+    repairRecommended: false,
+    effect: null,
+  };
   const state = () => ({
     info: "aa5500000daa50000200000000000000000000000000000f32015000020000000001020300",
     config: { mode: 6, brightness: 4, speed: 2, direction: 0, multicolor: true, rgb: [255, 255, 255], winLock: false, raw: "" },
@@ -36,7 +44,23 @@ export function installDevMock() {
     const a = (args ?? {}) as Record<string, unknown>;
     switch (cmd) {
       case "get_status":
-        return { connected: true, officialAppRunning: false };
+        return {
+          connected: true,
+          officialAppRunning: false,
+          effect: settings.effect
+            ? { state: "rodando", effect: settings.effect, fps: 18.2, message: null }
+            : { state: "parado", effect: null, fps: 0, message: null },
+        };
+      case "start_effect":
+        settings.effect = a.effect;
+        return null;
+      case "stop_effect":
+        settings.effect = null;
+        return null;
+      case "plugin:app|version":
+        return "1.1.0";
+      case "plugin:updater|check":
+        return null;
       case "read_device":
         return state();
       case "factory_keymap_hex":
@@ -48,6 +72,8 @@ export function installDevMock() {
         return { state: state(), backup: "mock" };
       case "write_lighting":
         settings.lighting = a.lighting;
+        settings.effect = null;
+        if (a.colorsHex) settings.customColorsHex = a.colorsHex;
         return { state: state(), backup: "mock" };
       case "macro_status":
         return [];

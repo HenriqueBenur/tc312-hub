@@ -208,6 +208,21 @@ impl Default for LightingInput {
     }
 }
 
+impl From<&Config> for LightingInput {
+    /// Configuração lida do teclado no formato que o software oficial grava (para regravar igual).
+    fn from(c: &Config) -> Self {
+        Self {
+            mode: c.mode,
+            brightness: c.brightness.min(4),
+            speed: c.speed.min(5),
+            direction: c.direction.min(3),
+            multicolor: c.multicolor,
+            rgb: c.rgb,
+            win_lock: c.win_lock,
+        }
+    }
+}
+
 pub const VALID_MODES: &[u8] = &[
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x14,
 ];

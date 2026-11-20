@@ -132,9 +132,29 @@ numérico e funções de mídia (posições que não existem no TKL).
   O TC312 Hub 1.0.1 faz o mesmo, exceto na 100 (tecla "/ ?" do ABNT2, 0x87), que fica como na tabela de fábrica.
 - **Regras (v1.0.1):** 0x0B/0x12 sempre com zeros depois do byte 383 (`sanitize_colors`). Keymap sempre por `sanitize_keymap`.
   Teclas novas só com usos ≤ 0x84. Reparo = 0x0B todo zero + keymap de fábrica sanitizado + config padrão (`examples/repair.rs`).
-- [hipótese] O reparo limpa o defeito. Ainda não testado no teclado: o teclado estava desconectado quando a correção foi feita.
+- [verificado pela pessoa] O reparo da v1.0.1 limpou o defeito (letras voltaram ao normal depois de reparar e reconectar).
 
 ## 11. Notas de implementação — [verificado]
 
 - Com hidapi no Windows, `write()` de 64 bytes (byte 0 = `0x04`) na coleção `0xFF1C` e depois `read(64, timeout)` funciona; a resposta chega em ~1 ms.
 - O MK1 Elite roda como administrador e fica escondido na bandeja depois de "fechado". Ele precisa estar **encerrado** antes de o nosso código falar com o teclado (ele manda o fluxo 0x12 e regrava o Win-lock).
+
+## 12. Modo direto (0x12) e efeitos do app — v1.1.0
+
+- [verificado] **0x12 é aceito pelo nosso código**: `examples/stream_test.rs` (20/11/2026) mandou ~300 quadros em 18 s.
+  - Cada quadro tem 10 pacotes, sem BEGIN/END, 50 ms entre quadros, só entradas 0..127.
+  - Todo pacote voltou com o eco dos dados.
+  - Config antes: `000404020001ffffff…ff00…`. Foi regravada no fim no formato canônico e ficou idêntica.
+- [não verificado] **Se as cores aparecem no teclado.** A pessoa não estava olhando durante o teste.
+  - Precisa de confirmação visual: vermelho → verde → azul → degradê roxo/ciano.
+- [hipótese, OpenRGB EVision V2] Ao parar de receber 0x12, o firmware volta ao efeito gravado.
+  - O TC312 Hub não depende disso: ao parar o motor, regrava a configuração com 0x06.
+- Regras do motor (`effects.rs`):
+  - cada quadro passa por `sanitize_colors`;
+  - ~18 quadros/s;
+  - pausa com o MK1 Elite aberto;
+  - para sozinho se o keytest vir evento estranho do Warrior (tecla 0xFF/0x00, mouse, sistema);
+  - gravações de configuração param o motor antes de escrever.
+- Leitura de respostas: cada handle aberto no Windows recebe cópia de todo relatório do teclado.
+  - `transact` esvazia a fila antes de cada pedido e ignora relatórios que não são o eco esperado.
+  - Isso permite o motor e uma gravação abrirem o teclado ao mesmo tempo, serializados pela trava `hid`.

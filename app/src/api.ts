@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { SoftEffect } from "./effects";
 
 export type KeyAction =
   | { kind: "key"; usage: number }
@@ -63,6 +64,7 @@ export interface Settings {
   macros: Macro[];
   activeProfile: string | null;
   repairRecommended: boolean;
+  effect: SoftEffect | null;
 }
 
 export interface HidEvent {
@@ -76,11 +78,21 @@ export interface Profile {
   lighting: Lighting;
   customColorsHex: string | null;
   macros: Macro[];
+  effect?: SoftEffect | null;
+}
+
+export interface EffectStatus {
+  /** "parado" | "rodando" | "aguardando" | "pausado" | "seguranca" */
+  state: string;
+  effect: SoftEffect | null;
+  fps: number;
+  message: string | null;
 }
 
 export interface Status {
   connected: boolean;
   officialAppRunning: boolean;
+  effect: EffectStatus;
 }
 
 export interface WriteResult {
@@ -127,4 +139,7 @@ export const api = {
   listBackups: () => invoke<BackupInfo[]>("list_backups"),
   restoreBackup: (name: string) => invoke<WriteResult>("restore_backup", { name }),
   openDataFolder: () => invoke<void>("open_data_folder"),
+  startEffect: (effect: SoftEffect) => invoke<void>("start_effect", { effect }),
+  stopEffect: () => invoke<void>("stop_effect"),
+  prepareUpdate: () => invoke<void>("prepare_update"),
 };

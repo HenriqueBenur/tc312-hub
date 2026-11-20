@@ -5,7 +5,7 @@
 //! à interface (evento "warrior-key"), e só enquanto o teste estiver ligado.
 //! O teclado Logitech é ignorado. Nada é bloqueado nem alterado: é só observação.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 use serde::Serialize;
@@ -13,6 +13,10 @@ use tauri::{AppHandle, Emitter};
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Vigia ligado enquanto o motor de efeitos manda quadros (cão de guarda), mesmo sem a tela de teste.
+static WATCH: AtomicBool = AtomicBool::new(false);
+static ANOMALIES: AtomicU32 = AtomicU32::new(0);
+static HWND: AtomicIsize = AtomicIsize::new(0);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +38,28 @@ pub struct HidEvent {
 
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::SeqCst);
+    if on {
+        reregister();
+    }
+}
+
+pub fn set_watch(on: bool) {
+    WATCH.store(on, Ordering::SeqCst);
+    if on {
+        reregister();
+    }
+}
+
+/// Eventos estranhos vindos do Warrior desde que o app abriu (tecla sem código, mouse, sistema).
+pub fn anomaly_count() -> u32 {
+    ANOMALIES.load(Ordering::SeqCst)
+}
+
+/// O registro de Raw Input é por processo: se outra parte do app (a janela do Tauri) registrar
+/// teclado/mouse depois, nossa janela deixa de receber. Ao ligar o teste, registra de novo.
+fn reregister() {
+    #[cfg(windows)]
+    win::post_reregister(HWND.load(Ordering::SeqCst));
 }
 
 #[cfg(not(windows))]
@@ -123,6 +149,7 @@ mod win {
         fn GetMessageW(msg: *mut Msg, hwnd: Hwnd, min: u32, max: u32) -> i32;
         fn TranslateMessage(msg: *const Msg) -> i32;
         fn DispatchMessageW(msg: *const Msg) -> isize;
+        fn PostMessageW(h: Hwnd, m: u32, w: usize, l: isize) -> i32;
     }
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -130,6 +157,7 @@ mod win {
     }
 
     const WM_INPUT: u32 = 0x00FF;
+    const WM_APP_REREGISTER: u32 = 0x8002;
     const RID_INPUT: u32 = 0x1000_0003;
     const RIDI_DEVICENAME: u32 = 0x2000_0007;
     const RIDEV_INPUTSINK: u32 = 0x100;
@@ -156,11 +184,36 @@ mod win {
         String::from_utf16_lossy(&buf).trim_end_matches('\0').to_uppercase()
     }
 
+    pub fn post_reregister(hwnd: isize) {
+        if hwnd != 0 {
+            unsafe { PostMessageW(hwnd as Hwnd, WM_APP_REREGISTER, 0, 0) };
+        }
+    }
+
     unsafe extern "system" fn wndproc(h: Hwnd, m: u32, w: usize, l: isize) -> isize {
-        if m == WM_INPUT && ENABLED.load(Ordering::SeqCst) {
+        if m == WM_APP_REREGISTER {
+            unsafe { register(h) };
+            return 0;
+        }
+        if m == WM_INPUT && (ENABLED.load(Ordering::SeqCst) || WATCH.load(Ordering::SeqCst)) {
             unsafe { handle_input(l) };
         }
         unsafe { DefWindowProcW(h, m, w, l) }
+    }
+
+    fn anomaly() {
+        ANOMALIES.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// teclado, mouse, mídia (consumer) e controle de sistema
+    unsafe fn register(hwnd: Hwnd) -> bool {
+        let rids = [
+            RawInputDevice { usage_page: 0x01, usage: 0x06, flags: RIDEV_INPUTSINK, target: hwnd },
+            RawInputDevice { usage_page: 0x01, usage: 0x02, flags: RIDEV_INPUTSINK, target: hwnd },
+            RawInputDevice { usage_page: 0x0C, usage: 0x01, flags: RIDEV_INPUTSINK, target: hwnd },
+            RawInputDevice { usage_page: 0x01, usage: 0x80, flags: RIDEV_INPUTSINK, target: hwnd },
+        ];
+        unsafe { RegisterRawInputDevices(rids.as_ptr(), rids.len() as u32, std::mem::size_of::<RawInputDevice>() as u32) != 0 }
     }
 
     unsafe fn handle_input(l: isize) {
@@ -181,15 +234,24 @@ mod win {
         }
         let body = &buf[header_size as usize..];
         let Some(app) = APP.get() else { return };
+        let show = ENABLED.load(Ordering::SeqCst);
         match header.kind {
             RIM_TYPEKEYBOARD => {
                 let kb = unsafe { &*(body.as_ptr() as *const RawKeyboard) };
-                let ev = KeyEvent { vk: kb.vkey, scan: kb.make_code, e0: kb.flags & 0x2 != 0, down: kb.flags & 0x1 == 0 };
-                let _ = app.emit("warrior-key", ev);
+                if kb.vkey == 0xFF || kb.vkey == 0 {
+                    anomaly();
+                }
+                if show {
+                    let ev = KeyEvent { vk: kb.vkey, scan: kb.make_code, e0: kb.flags & 0x2 != 0, down: kb.flags & 0x1 == 0 };
+                    let _ = app.emit("warrior-key", ev);
+                }
             }
             RIM_TYPEMOUSE if body.len() >= 24 => {
-                let data = crate::protocol::hex(&body[..24]);
-                let _ = app.emit("warrior-hid", HidEvent { kind: "mouse".into(), data });
+                anomaly();
+                if show {
+                    let data = crate::protocol::hex(&body[..24]);
+                    let _ = app.emit("warrior-hid", HidEvent { kind: "mouse".into(), data });
+                }
             }
             RIM_TYPEHID if body.len() >= 8 => {
                 let size = u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
@@ -197,7 +259,12 @@ mod win {
                 let end = (8 + size * count).min(body.len());
                 let raw = &body[8..end];
                 let kind = if name.contains("COL03") || raw.first() == Some(&0x03) { "mídia" } else { "sistema" };
-                let _ = app.emit("warrior-hid", HidEvent { kind: kind.into(), data: crate::protocol::hex(raw) });
+                if kind == "sistema" {
+                    anomaly();
+                }
+                if show {
+                    let _ = app.emit("warrior-hid", HidEvent { kind: kind.into(), data: crate::protocol::hex(raw) });
+                }
             }
             _ => {}
         }
@@ -231,14 +298,8 @@ mod win {
             eprintln!("[tc312] keytest: CreateWindowExW falhou");
             return;
         }
-        // teclado, mouse, mídia (consumer) e controle de sistema
-        let rids = [
-            RawInputDevice { usage_page: 0x01, usage: 0x06, flags: RIDEV_INPUTSINK, target: hwnd },
-            RawInputDevice { usage_page: 0x01, usage: 0x02, flags: RIDEV_INPUTSINK, target: hwnd },
-            RawInputDevice { usage_page: 0x0C, usage: 0x01, flags: RIDEV_INPUTSINK, target: hwnd },
-            RawInputDevice { usage_page: 0x01, usage: 0x80, flags: RIDEV_INPUTSINK, target: hwnd },
-        ];
-        if unsafe { RegisterRawInputDevices(rids.as_ptr(), rids.len() as u32, std::mem::size_of::<RawInputDevice>() as u32) } == 0 {
+        HWND.store(hwnd as isize, Ordering::SeqCst);
+        if !unsafe { register(hwnd) } {
             eprintln!("[tc312] keytest: RegisterRawInputDevices falhou");
             return;
         }

@@ -9,8 +9,10 @@ A partir da 1.1.0, o próprio app avisa e instala as novas versões com um cliqu
 
 ## O que ele faz
 - **Teclas:** remapeia qualquer tecla (letras, símbolos, modificadores, mídia, macros M1–M12). A tecla Fn é protegida.
-- **Iluminação:** efeitos do próprio teclado, paletas de 1, 2 ou 3 cores, gradiente e cor por tecla.
-- **Macros:** atalhos, textos e esperas, disparados por uma tecla do Warrior.
+- **Iluminação:** cada efeito com Arco-íris, 1, 2 ou 3 cores.
+  - O que o firmware tem fica gravado no teclado; o resto o app desenha ao vivo.
+  - Também tem degradê e cor por tecla, com prévia na tela. Veja [docs/ILUMINACAO.md](docs/ILUMINACAO.md).
+- **Macros:** atalhos, textos e esperas, disparados por uma tecla do Warrior (também com Shift/Ctrl/Alt segurados).
 - **Perfis e backups:** cada gravação guarda antes o estado do teclado. O botão "Reparar" volta tudo ao padrão de fábrica.
 - **Testar teclas:** mostra ao vivo o que o Warrior envia ao Windows.
 
@@ -32,7 +34,11 @@ npm run tauri dev
 ```
 
 - Testes: `cd app/src-tauri && cargo test --lib`.
-- Publicar uma versão: `scripts/release.ps1` (precisa da chave de assinatura do atualizador, que **não** fica no repositório).
+- Só a interface, com backend simulado: `npm run dev` e abrir `http://localhost:1420`.
+- Publicar uma versão: `powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -Publish`.
+  - Precisa da chave de assinatura do atualizador, que **não** fica no repositório.
+- Histórico: [CHANGELOG.md](CHANGELOG.md).
+- Arquitetura: [docs/ARQUITETURA.md](docs/ARQUITETURA.md).
 
 ## Créditos
 O formato básico dos pacotes de iluminação foi confirmado com a documentação do [OpenRGB](https://gitlab.com/CalcProgrammer1/OpenRGB) (EVisionKeyboardController).

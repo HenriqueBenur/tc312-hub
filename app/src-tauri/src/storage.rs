@@ -5,11 +5,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::device::DeviceState;
+use crate::effects::SoftEffect;
 use crate::macros::Macro;
 use crate::protocol::LightingInput;
 
@@ -26,6 +28,10 @@ pub struct Settings {
     pub active_profile: Option<String>,
     /// Ligado quando a v1.0.0 deixou cor gravada depois da entrada 127 (causa das "teclas malucas").
     pub repair_recommended: bool,
+    /// Efeito desenhado pelo app (paletas). Só roda com o app aberto ou na bandeja.
+    pub effect: Option<SoftEffect>,
+    /// A checagem dos backups da v1.0.0 já foi feita (não repetir a cada abertura).
+    pub legacy_check_done: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +44,8 @@ pub struct Profile {
     pub custom_colors_hex: Option<String>,
     #[serde(default)]
     pub macros: Vec<Macro>,
+    #[serde(default)]
+    pub effect: Option<SoftEffect>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,8 +55,11 @@ pub struct BackupInfo {
     pub reason: String,
 }
 
+#[derive(Clone)]
 pub struct Storage {
     root: PathBuf,
+    /// Serializa ler-modificar-salvar do settings.json (comandos em threads diferentes).
+    lock: Arc<Mutex<()>>,
 }
 
 /// Data/hora local não é trivial sem dependências; usamos UTC no nome das pastas.
@@ -82,7 +93,7 @@ impl Storage {
     pub fn new(root: PathBuf) -> Self {
         let _ = fs::create_dir_all(root.join("backups"));
         let _ = fs::create_dir_all(root.join("profiles"));
-        Self { root }
+        Self { root, lock: Arc::new(Mutex::new(())) }
     }
 
     pub fn root(&self) -> &Path {
@@ -103,15 +114,35 @@ impl Storage {
     }
 
     pub fn load_settings(&self) -> Settings {
-        fs::read_to_string(self.root.join("settings.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let path = self.root.join("settings.json");
+        let Ok(text) = fs::read_to_string(&path) else { return Settings::default() };
+        match serde_json::from_str(&text) {
+            Ok(s) => s,
+            Err(e) => {
+                // não sobrescreve em silêncio: guarda a cópia ilegível antes de recomeçar
+                let keep = self.root.join(format!("settings.ilegivel-{}.json", stamp()));
+                let _ = fs::copy(&path, &keep);
+                self.log(&format!("settings.json ilegível ({e}); cópia em {}", keep.display()));
+                Settings::default()
+            }
+        }
     }
 
+    /// Grava num arquivo temporário e troca de uma vez (queda de energia não deixa JSON pela metade).
     pub fn save_settings(&self, s: &Settings) -> Result<(), String> {
         let json = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-        fs::write(self.root.join("settings.json"), json).map_err(|e| format!("Não salvei as configurações: {e}"))
+        let tmp = self.root.join("settings.json.tmp");
+        fs::write(&tmp, json).map_err(|e| format!("Não salvei as configurações: {e}"))?;
+        fs::rename(&tmp, self.root.join("settings.json")).map_err(|e| format!("Não salvei as configurações: {e}"))
+    }
+
+    /// Lê, altera e salva as configurações sem perder mudanças feitas ao mesmo tempo por outro comando.
+    pub fn update_settings<T>(&self, f: impl FnOnce(&mut Settings) -> T) -> Result<T, String> {
+        let _g = self.lock.lock().map_err(|_| "configurações ocupadas")?;
+        let mut s = self.load_settings();
+        let out = f(&mut s);
+        self.save_settings(&s)?;
+        Ok(out)
     }
 
     /// Guarda o estado lido do teclado antes de uma gravação.

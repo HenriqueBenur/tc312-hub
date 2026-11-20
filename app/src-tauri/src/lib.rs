@@ -1,10 +1,11 @@
 pub mod device;
+pub mod effects;
 mod keytest;
 mod macros;
 pub mod protocol;
 mod storage;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::{
@@ -14,15 +15,17 @@ use tauri::{
 };
 
 use device::{DeviceState, Warrior};
+use effects::{EffectEngine, EffectStatus, Hooks, SoftEffect};
 use macros::{Macro, MacroEngine, SlotStatus};
 use protocol::LightingInput;
 use storage::{BackupInfo, Profile, Settings, Storage};
 
 struct AppState {
-    /// Serializa o acesso ao HID (uma conversa com o teclado por vez).
-    hid: Mutex<()>,
+    /// Serializa o acesso ao HID (uma conversa com o teclado por vez; o motor de efeitos também usa).
+    hid: Arc<Mutex<()>>,
     storage: Storage,
     macros: MacroEngine,
+    effects: EffectEngine,
 }
 
 #[derive(Serialize)]
@@ -30,6 +33,7 @@ struct AppState {
 struct Status {
     connected: bool,
     official_app_running: bool,
+    effect: EffectStatus,
 }
 
 #[derive(Serialize)]
@@ -74,10 +78,20 @@ struct Changes {
     lighting: Option<LightingInput>,
     macros: Option<Vec<Macro>>,
     profile: Option<Option<String>>,
+    /// Some(None) = desligar o efeito do app; Some(Some(e)) = ligar depois de gravar.
+    effect: Option<Option<SoftEffect>>,
 }
 
 fn apply(st: &AppState, reason: &str, ch: Changes) -> Result<WriteResult, String> {
+    // Gravações que não escolhem efeito (ex.: bloqueio da tecla Win) pausam o efeito do app
+    // durante a escrita; depois ele volta, inclusive se a gravação falhar.
+    let resume = if ch.effect.is_none() { st.effects.current() } else { None };
     let r = apply_inner(st, reason, ch);
+    if let Some(e) = resume {
+        if !st.effects.is_active() {
+            set_effect_running(st, Some(e));
+        }
+    }
     if let Err(e) = &r {
         st.storage.log(&format!("gravação falhou ({reason}): {e}"));
     }
@@ -93,40 +107,76 @@ fn apply_inner(st: &AppState, reason: &str, ch: Changes) -> Result<WriteResult, 
             return Err("Tabela de cores com tamanho errado.".into());
         }
     }
-    let _guard = st.hid.lock().map_err(|_| "HID ocupado")?;
-    let mut settings = st.storage.load_settings();
+    if let Some(Some(e)) = &ch.effect {
+        e.validate()?;
+    }
+    // Quem grava a configuração define o efeito do teclado: o efeito do app para antes.
+    if block.is_some() || ch.colors.is_some() {
+        st.effects.stop_for_write();
+    }
+    let guard = st.hid.lock().map_err(|_| "HID ocupado")?;
+    let applied = st.storage.load_settings().keymap_hex;
     let w = Warrior::open()?;
-    let before = w.read_state()?.with_applied_keymap(settings.keymap_hex.as_deref());
+    let before = w.read_state()?.with_applied_keymap(applied.as_deref());
     let cfg_raw = w.read_config()?;
     let backup = st.storage.backup(&before, &cfg_raw, reason)?;
 
+    let mut keymap_hex = None;
     if let Some(km) = &ch.keymap {
         let clean = protocol::sanitize_keymap(km);
         let current = protocol::unhex(&before.keymap_hex)?;
         protocol::validate_keymap(&clean, &current)?;
         w.write_keymap(&clean)?;
-        settings.keymap_hex = Some(protocol::hex(&clean));
+        keymap_hex = Some(protocol::hex(&clean));
     }
+    let mut colors_hex = None;
     if let Some(c) = &ch.colors {
         let clean = protocol::sanitize_colors(c);
         w.write_custom_colors(&clean)?;
-        settings.custom_colors_hex = Some(protocol::hex(&clean));
+        colors_hex = Some(protocol::hex(&clean));
     }
-    if let (Some(b), Some(l)) = (&block, ch.lighting) {
+    if let Some(b) = &block {
         w.write_config(b)?;
-        settings.lighting = Some(l);
     }
+    let state = w.read_state()?.with_applied_keymap(keymap_hex.as_deref().or(applied.as_deref()));
+    drop(w);
+    drop(guard);
+
+    // só muda nas configurações o que esta gravação mexeu (outros comandos podem ter salvo nesse meio-tempo)
+    let effect = ch.effect.clone();
+    st.storage.update_settings(|s| {
+        if let Some(h) = keymap_hex {
+            s.keymap_hex = Some(h);
+        }
+        if let Some(h) = colors_hex {
+            s.custom_colors_hex = Some(h);
+        }
+        if let Some(l) = ch.lighting {
+            s.lighting = Some(l);
+        }
+        if let Some(m) = &ch.macros {
+            s.macros = m.clone();
+        }
+        if let Some(p) = ch.profile {
+            s.active_profile = p;
+        }
+        if let Some(e) = &effect {
+            s.effect = e.clone();
+        }
+    })?;
     if let Some(m) = ch.macros {
-        settings.macros = m.clone();
         st.macros.set(m);
     }
-    if let Some(p) = ch.profile {
-        settings.active_profile = p;
+    if let Some(e) = effect {
+        set_effect_running(st, e);
     }
-    st.storage.save_settings(&settings)?;
-    let state = w.read_state()?.with_applied_keymap(settings.keymap_hex.as_deref());
     st.storage.log(&format!("gravação ok ({reason}); backup {backup}"));
     Ok(WriteResult { state, backup })
+}
+
+fn set_effect_running(st: &AppState, e: Option<SoftEffect>) {
+    keytest::set_watch(e.is_some());
+    st.effects.set(e);
 }
 
 fn stamp_now() -> String {
@@ -138,13 +188,14 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Sen
 }
 
 #[tauri::command]
-async fn get_status() -> Status {
-    tauri::async_runtime::spawn_blocking(|| Status {
+async fn get_status(app: AppHandle) -> Status {
+    tauri::async_runtime::spawn_blocking(move || Status {
         connected: Warrior::is_connected(),
         official_app_running: official_app_running(),
+        effect: app.state::<AppState>().effects.status(),
     })
     .await
-    .unwrap_or(Status { connected: false, official_app_running: false })
+    .unwrap_or(Status { connected: false, official_app_running: false, effect: EffectStatus::default() })
 }
 
 #[tauri::command]
@@ -183,7 +234,11 @@ async fn write_lighting(app: AppHandle, lighting: LightingInput, colors_hex: Opt
     blocking(move || {
         let st = app.state::<AppState>();
         let colors = colors_hex.map(|h| protocol::unhex(&h)).transpose()?;
-        apply(&st, "antes de gravar iluminação", Changes { lighting: Some(lighting), colors, ..Default::default() })
+        apply(
+            &st,
+            "antes de gravar iluminação",
+            Changes { lighting: Some(lighting), colors, effect: Some(None), ..Default::default() },
+        )
     })
     .await
 }
@@ -192,7 +247,16 @@ async fn write_lighting(app: AppHandle, lighting: LightingInput, colors_hex: Opt
 async fn set_win_lock(app: AppHandle, on: bool) -> Result<WriteResult, String> {
     blocking(move || {
         let st = app.state::<AppState>();
-        let base = st.storage.load_settings().lighting.unwrap_or_default();
+        // parte da configuração salva; sem ela, da que está no teclado (não troca o efeito de ninguém)
+        let saved = st.storage.load_settings().lighting;
+        let base = match saved {
+            Some(l) => l,
+            None => {
+                let _g = st.hid.lock().map_err(|_| "HID ocupado")?;
+                let cfg = Warrior::open()?.read_config()?;
+                protocol::decode_config(&cfg).map(|c| LightingInput::from(&c)).unwrap_or_default()
+            }
+        };
         let lighting = LightingInput { win_lock: on, ..base };
         apply(&st, "antes de mudar o bloqueio da tecla Win", Changes { lighting: Some(lighting), ..Default::default() })
     })
@@ -213,13 +277,14 @@ async fn restore_factory(app: AppHandle) -> Result<WriteResult, String> {
                 colors: Some(vec![0u8; protocol::COLORS_LEN]),
                 lighting: Some(LightingInput::default()),
                 profile: Some(None),
+                effect: Some(None),
                 ..Default::default()
             },
         )?;
-        let mut s = st.storage.load_settings();
-        s.custom_colors_hex = None;
-        s.repair_recommended = false;
-        st.storage.save_settings(&s)?;
+        st.storage.update_settings(|s| {
+            s.custom_colors_hex = None;
+            s.repair_recommended = false;
+        })?;
         let _ = std::fs::write(st.storage.root().join("repaired-1.0.1"), stamp_now());
         st.storage.log("reparo concluído: keymap de fábrica, tabela de cores zerada, iluminação padrão");
         Ok(r)
@@ -239,11 +304,53 @@ fn factory_keymap_hex() -> String {
 
 #[tauri::command]
 fn set_macros(state: State<'_, AppState>, macros: Vec<Macro>) -> Result<(), String> {
-    let mut s = state.storage.load_settings();
-    s.macros = macros.clone();
-    state.storage.save_settings(&s)?;
+    let m = macros.clone();
+    state.storage.update_settings(|s| s.macros = m)?;
     state.macros.set(macros);
     Ok(())
+}
+
+/// Liga um efeito desenhado pelo app (paleta de 1 a 3 cores ou arco-íris) e salva a escolha.
+#[tauri::command]
+async fn start_effect(app: AppHandle, effect: SoftEffect) -> Result<(), String> {
+    blocking(move || {
+        ensure_free()?;
+        effect.validate()?;
+        let st = app.state::<AppState>();
+        let e = effect.clone();
+        st.storage.update_settings(|s| s.effect = Some(e))?;
+        st.storage.log(&format!("efeito do app ligado: {:?}", effect.kind));
+        set_effect_running(&st, Some(effect));
+        Ok(())
+    })
+    .await
+}
+
+/// Desliga o efeito do app; o teclado volta ao efeito gravado nele.
+#[tauri::command]
+async fn stop_effect(app: AppHandle) -> Result<(), String> {
+    blocking(move || {
+        let st = app.state::<AppState>();
+        st.storage.update_settings(|s| s.effect = None)?;
+        set_effect_running(&st, None);
+        st.effects.stop_and_wait();
+        Ok(())
+    })
+    .await
+}
+
+/// Antes de instalar uma atualização: para o efeito (regravando a configuração do teclado),
+/// porque o instalador fecha o app de uma vez.
+#[tauri::command]
+async fn prepare_update(app: AppHandle) -> Result<(), String> {
+    blocking(move || {
+        let st = app.state::<AppState>();
+        keytest::set_watch(false);
+        st.effects.stop_and_wait();
+        st.storage.log("preparando atualização");
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -293,6 +400,7 @@ async fn apply_profile(app: AppHandle, name: String) -> Result<WriteResult, Stri
             lighting: Some(p.lighting),
             macros: Some(p.macros.clone()),
             profile: Some(Some(p.name.clone())),
+            effect: Some(p.effect.clone()),
         };
         apply(&st, &format!("antes de aplicar o perfil {}", p.name), ch)
     })
@@ -334,10 +442,15 @@ fn show_main(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Segunda instância (ex.: atalho clicado com o app na bandeja) só traz a janela de volta.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             let storage = Storage::new(dir);
             let mut settings = storage.load_settings();
+            let first_check = !settings.legacy_check_done;
             // v1.0.0 gravava cor depois da entrada 127: limpa o que ficou salvo e recomenda o reparo.
             if let Some(h) = settings.custom_colors_hex.clone() {
                 if let Ok(c) = protocol::unhex(&h) {
@@ -348,17 +461,48 @@ pub fn run() {
                     }
                 }
             }
-            if storage.list_backups().iter().any(|b| b.reason.contains("gravar iluminação"))
+            // Só na primeira abertura depois de atualizar: backups de iluminação sem o reparo
+            // indicam gravação feita pela v1.0.0. Antes isto rodava sempre e qualquer gravação de
+            // iluminação nova acendia o aviso de reparo de novo (bug da v1.0.1).
+            if first_check
+                && storage.list_backups().iter().any(|b| b.reason.contains("gravar iluminação"))
                 && !std::path::Path::new(&storage.root().join("repaired-1.0.1")).exists()
             {
-                // houve gravação de iluminação com a v1.0.0 (pode ter incluído cores por tecla)
                 settings.repair_recommended = true;
             }
+            settings.legacy_check_done = true;
             let _ = storage.save_settings(&settings);
             let engine = MacroEngine::start(settings.macros.clone());
             storage.log(&format!("TC312 Hub {} iniciado; {} macro(s)", env!("CARGO_PKG_VERSION"), settings.macros.len()));
-            app.manage(AppState { hid: Mutex::new(()), storage, macros: engine });
+
+            let hid = Arc::new(Mutex::new(()));
+            let restore_storage = storage.clone();
+            let log_storage = storage.clone();
+            let effects = EffectEngine::start(Hooks {
+                hid: hid.clone(),
+                anomaly_count: keytest::anomaly_count,
+                official_app_running,
+                log: Box::new(move |m| log_storage.log(m)),
+                // ao parar o efeito do app, regrava a configuração salva (ou a que está no teclado)
+                restore: Box::new(move |w| {
+                    let lighting = match restore_storage.load_settings().lighting {
+                        Some(l) => Some(l),
+                        None => w.read_config().ok().and_then(|c| protocol::decode_config(&c)).map(|c| LightingInput::from(&c)),
+                    };
+                    if let Some(block) = lighting.and_then(|l| protocol::encode_config(&l).ok()) {
+                        if let Err(e) = w.write_config(&block) {
+                            restore_storage.log(&format!("não regravei a configuração ao parar o efeito: {e}"));
+                        }
+                    }
+                }),
+            });
             keytest::start(app.handle().clone());
+            if let Some(e) = settings.effect.clone().filter(|e| e.validate().is_ok()) {
+                storage.log(&format!("retomando o efeito do app: {:?}", e.kind));
+                keytest::set_watch(true);
+                effects.set(Some(e));
+            }
+            app.manage(AppState { hid, storage, macros: engine, effects });
 
             let open = MenuItem::with_id(app, "open", "Abrir TC312 Hub", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
@@ -371,7 +515,11 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_main(app),
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        // devolve o teclado ao efeito gravado nele antes de sair
+                        app.state::<AppState>().effects.shutdown();
+                        app.exit(0)
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -399,6 +547,9 @@ pub fn run() {
             get_settings,
             factory_keymap_hex,
             set_macros,
+            start_effect,
+            stop_effect,
+            prepare_update,
             macro_status,
             test_macro,
             set_key_test,

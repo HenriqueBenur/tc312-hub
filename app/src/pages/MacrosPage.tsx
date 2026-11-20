@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Macro, type SlotStatus, type Step } from "../api";
+import { PageHead } from "../App";
+import { IconClose, IconDown, IconPlay, IconPlus, IconRecord, IconTrash, IconUp } from "../icons";
 import { CODE_TO_VK, vkName } from "../keys";
 
 const SLOTS = Array.from({ length: 12 }, (_, i) => i);
@@ -9,12 +11,12 @@ function stepLabel(s: Step): string {
   if (s.type === "combo") return s.vks.map(vkName).join(" + ");
   if (s.type === "text") {
     const t = s.text.replace(/\n/g, " ⏎ ");
-    return `“${t.length > 48 ? t.slice(0, 48) + "…" : t}”`;
+    return `“${t.length > 60 ? t.slice(0, 60) + "…" : t}”`;
   }
-  return `esperar ${s.ms} ms`;
+  return `${s.ms} ms`;
 }
 
-function ComboRecorder({ onDone }: { onDone: (vks: number[]) => void }) {
+function ComboRecorder({ onDone, onCancel }: { onDone: (vks: number[]) => void; onCancel: () => void }) {
   const [vks, setVks] = useState<number[]>([]);
   useEffect(() => {
     const MODS = new Set([0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0x5b, 0x5c]);
@@ -52,10 +54,10 @@ function ComboRecorder({ onDone }: { onDone: (vks: number[]) => void }) {
   }, []);
   return (
     <div className="recorder">
-      <span className="rec-dot" /> {vks.length ? vks.map(vkName).join(" + ") : "Pressione o atalho (ex.: Ctrl + Shift + S)…"}
-      <div className="spacer" />
-      <button className="ghost" onClick={() => setVks([])}>Limpar</button>
-      <button className="primary" disabled={!vks.length} onClick={() => onDone(vks)}>Adicionar</button>
+      <IconRecord size={14} />
+      <span style={{ flex: 1 }}>{vks.length ? vks.map(vkName).join(" + ") : "Pressione o atalho (ex.: Ctrl + Shift + S)…"}</span>
+      <button className="btn quiet small" onClick={() => (vks.length ? setVks([]) : onCancel())}>{vks.length ? "Limpar" : "Cancelar"}</button>
+      <button className="btn primary small" disabled={!vks.length} onClick={() => onDone(vks)}>Adicionar</button>
     </div>
   );
 }
@@ -92,101 +94,140 @@ export function MacrosPage({
     [s[i], s[j]] = [s[j], s[i]];
     update({ steps: s });
   };
-  const dirty = JSON.stringify(list.filter((m) => m.steps.length || m.name)) !== JSON.stringify(macros);
+  const keep = list.filter((m) => m.steps.length || m.name);
+  const dirty = JSON.stringify(keep) !== JSON.stringify(macros);
 
   const save = async () => {
-    const keep = list.filter((m) => m.steps.length || m.name);
     try {
       await api.setMacros(keep);
       onSaved(keep);
       notify("Macros salvas");
+      return true;
     } catch (e) {
       notify(String(e), true);
+      return false;
     }
   };
 
   const test = async () => {
-    if (dirty) await save();
+    if (dirty && !(await save())) return;
     for (let i = 3; i > 0; i--) {
       setCountdown(i);
       await new Promise((r) => setTimeout(r, 1000));
     }
     setCountdown(null);
-    api.testMacro(sel);
+    api.testMacro(sel).catch(() => {});
   };
 
   const st = (slot: number) => status.find((s) => s.slot === slot);
 
   return (
-    <section className="content">
-      <div className="section-head">
-        <h2>Macros</h2>
-        <span className="muted">M1–M12 · atribua a uma tecla do Warrior na página Teclas</span>
-        <div className="spacer" />
-        <button className="primary" disabled={!dirty} onClick={save}>Salvar macros</button>
-      </div>
+    <>
+      <PageHead title="Macros" sub="M1–M12 · atribua a uma tecla do Warrior na página Teclas">
+        {dirty && <button className="btn" onClick={() => setList(SLOTS.map((s) => macros.find((m) => m.slot === s) ?? emptyMacro(s)))}>Descartar</button>}
+        <button className="btn primary" disabled={!dirty} onClick={save}>Salvar macros</button>
+      </PageHead>
 
-      <div className="macro-layout">
-        <div className="panel slot-list">
-          {list.map((m) => (
-            <button key={m.slot} className={`slot${sel === m.slot ? " active" : ""}`} onClick={() => setSel(m.slot)}>
-              <b>M{m.slot + 1}</b>
-              <span>{m.name || (m.steps.length ? `${m.steps.length} passo(s)` : "vazia")}</span>
-              {st(m.slot) && <i className={st(m.slot)!.registered ? "ok" : "bad"} title={st(m.slot)!.registered ? "Ativa" : "Não registrada"} />}
-            </button>
-          ))}
-        </div>
-
-        <div className="panel">
-          <div className="form">
-            <label>Nome</label>
-            <input value={cur.name} placeholder={`Macro M${sel + 1}`} onChange={(e) => update({ name: e.target.value })} />
-            <label>Repetir</label>
-            <input type="number" min={1} max={100} value={cur.repeat} onChange={(e) => update({ repeat: Math.max(1, Math.min(100, Number(e.target.value) || 1)) })} />
-          </div>
-
-          <h3 className="mt">Passos</h3>
-          {cur.steps.length === 0 && <p className="muted">Nenhum passo ainda.</p>}
-          <ol className="steps">
-            {cur.steps.map((s, i) => (
-              <li key={i}>
-                <span className={`step-kind ${s.type}`}>{s.type === "combo" ? "Atalho" : s.type === "text" ? "Texto" : "Espera"}</span>
-                <span className="step-label">{stepLabel(s)}</span>
-                <button className="icon" onClick={() => moveStep(i, -1)} aria-label="Subir">↑</button>
-                <button className="icon" onClick={() => moveStep(i, 1)} aria-label="Descer">↓</button>
-                <button className="icon" onClick={() => update({ steps: cur.steps.filter((_, j) => j !== i) })} aria-label="Remover">✕</button>
-              </li>
-            ))}
-          </ol>
-
-          {recording ? (
-            <ComboRecorder onDone={(vks) => { addStep({ type: "combo", vks }); setRecording(false); }} />
-          ) : (
-            <div className="add-steps">
-              <button className="ghost" onClick={() => setRecording(true)}>+ Atalho</button>
-              <div className="inline">
-                <textarea rows={2} value={text} placeholder="Texto a digitar (Enter quebra linha)" onChange={(e) => setText(e.target.value)} />
-                <button className="ghost" disabled={!text} onClick={() => { addStep({ type: "text", text }); setText(""); }}>+ Texto</button>
-              </div>
-              <div className="inline">
-                <input type="number" min={10} max={10000} step={10} value={delay} onChange={(e) => setDelay(Number(e.target.value) || 100)} />
-                <button className="ghost" onClick={() => addStep({ type: "delay", ms: delay })}>+ Espera (ms)</button>
+      <div className="page">
+        <div className="macro-grid">
+          <section className="panel">
+            <div className="panel-head"><h2>Macros</h2></div>
+            <div className="panel-body flush">
+              <div className="slots">
+                {list.map((m) => {
+                  const s = st(m.slot);
+                  return (
+                    <button key={m.slot} className={`slot${sel === m.slot ? " on" : ""}`} onClick={() => { setSel(m.slot); setRecording(false); }}>
+                      <b>M{m.slot + 1}</b>
+                      <span>{m.name || (m.steps.length ? `${m.steps.length} passo${m.steps.length > 1 ? "s" : ""}` : "vazia")}</span>
+                      {s && <i className={`dot ${s.registered ? "ok" : "err"}`} title={s.registered ? "Ativa" : `F${13 + m.slot} já está em uso por outro programa`} />}
+                    </button>
+                  );
+                })}
               </div>
             </div>
-          )}
+          </section>
 
-          <div className="row-actions mt">
-            <button className="ghost" disabled={!cur.steps.length || countdown !== null} onClick={test}>
-              {countdown !== null ? `Executando em ${countdown}… (clique onde quer digitar)` : "Testar agora"}
-            </button>
-            <button className="ghost" onClick={() => update({ name: "", steps: [], repeat: 1 })}>Limpar macro</button>
-          </div>
-          <div className="hint">
-            Como funciona: a tecla escolhida no Warrior passa a enviar F{13 + sel} (que o seu Logitech não tem) e o TC312 Hub,
-            aberto ou na bandeja, executa a macro. Feche pelo menu da bandeja para desligar.
-          </div>
+          <section className="panel">
+            <div className="panel-head">
+              <input
+                value={cur.name}
+                placeholder={`Nome da macro M${sel + 1}`}
+                onChange={(e) => update({ name: e.target.value })}
+                style={{ flex: 1, fontWeight: 600 }}
+                aria-label="Nome da macro"
+              />
+              <label className="field-row faint small" style={{ gap: 8 }}>
+                Repetir
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={cur.repeat}
+                  style={{ width: 70 }}
+                  onChange={(e) => update({ repeat: Math.max(1, Math.min(100, Number(e.target.value) || 1)) })}
+                />
+              </label>
+            </div>
+            <div className="panel-body">
+              {cur.steps.length === 0 ? (
+                <div className="empty"><b>Nenhum passo ainda</b>Grave um atalho, digite um texto ou adicione uma espera.</div>
+              ) : (
+                <ol className="steps">
+                  {cur.steps.map((s, i) => (
+                    <li key={i}>
+                      <span className="step-n">{i + 1}</span>
+                      <span className={`step-kind ${s.type}`}>{s.type === "combo" ? "Atalho" : s.type === "text" ? "Texto" : "Espera"}</span>
+                      <span className="step-label">{stepLabel(s)}</span>
+                      <button className="icon-btn" onClick={() => moveStep(i, -1)} disabled={i === 0} aria-label="Subir"><IconUp size={15} /></button>
+                      <button className="icon-btn" onClick={() => moveStep(i, 1)} disabled={i === cur.steps.length - 1} aria-label="Descer"><IconDown size={15} /></button>
+                      <button className="icon-btn" onClick={() => update({ steps: cur.steps.filter((_, j) => j !== i) })} aria-label="Remover"><IconClose size={15} /></button>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+            <div style={{ padding: "0 16px 16px" }} className="stack">
+              {recording ? (
+                <ComboRecorder onDone={(vks) => { addStep({ type: "combo", vks }); setRecording(false); }} onCancel={() => setRecording(false)} />
+              ) : (
+                <>
+                  <div className="add-row">
+                    <textarea rows={1} value={text} placeholder="Texto a digitar (Enter quebra linha)" onChange={(e) => setText(e.target.value)} style={{ minWidth: 0, height: 34 }} aria-label="Texto a digitar" />
+                    <button className="btn" disabled={!text} onClick={() => { addStep({ type: "text", text }); setText(""); }}><IconPlus size={15} /> Texto</button>
+                  </div>
+                  <div className="field-row">
+                    <button className="btn" onClick={() => setRecording(true)}><IconRecord size={12} /> Gravar atalho</button>
+                    <div className="grow" style={{ flex: 1 }} />
+                    <input type="number" min={10} max={10000} step={10} value={delay} style={{ width: 90 }} onChange={(e) => setDelay(Number(e.target.value) || 100)} aria-label="Espera em milissegundos" />
+                    <span className="faint small">ms</span>
+                    <button className="btn" onClick={() => addStep({ type: "delay", ms: delay })}><IconPlus size={15} /> Espera</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head"><h2>Testar</h2></div>
+            <div className="panel-body">
+              <div className="stack">
+                <button className="btn primary" disabled={!cur.steps.length || countdown !== null} onClick={test}>
+                  <IconPlay size={15} /> {countdown !== null ? `Executando em ${countdown}…` : "Testar agora"}
+                </button>
+                {countdown !== null && <p className="note" style={{ marginTop: 0 }}>Clique onde a macro deve digitar.</p>}
+                <button className="btn" disabled={!cur.steps.length && !cur.name} onClick={() => update({ name: "", steps: [], repeat: 1 })}>
+                  <IconTrash size={15} /> Limpar esta macro
+                </button>
+                <p className="note">
+                  A tecla escolhida no Warrior passa a enviar F{13 + sel} (que o seu Logitech não tem) e o TC312 Hub, aberto ou na bandeja,
+                  executa a macro. Funciona também com Shift, Ctrl ou Alt segurados. Apertar a tecla de novo durante a execução interrompe.
+                </p>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
-    </section>
+    </>
   );
 }

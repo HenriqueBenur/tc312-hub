@@ -37,6 +37,7 @@ Abra o Warrior por VID + PID + usage page `0xFF1C`; nunca só por VID.
    Lista branca atual (captura `20261116_022340`): leituras `0x01 0x02 0x03 0x05 0x07 0x1B`;
    escritas `0x06` (config), `0x09` (keymap), `0x0B` (cores custom), `0x12` (cores dinâmicas).
    Qualquer outro código de comando está proibido até aparecer numa captura.
+   O 0x12 (modo direto) já foi aceito pelo nosso código (seção 12); a confirmação visual ainda falta.
    **Tabelas de cor (0x0B/0x12): nunca escreva byte ≠ 0 depois do byte 383 (entrada 127).** Isso corrompeu
    o teclado na v1.0.0 (letras abrindo atalhos do Windows). Ver a seção 10 de `references/protocolo.md`.
 3. **Nunca** envie comandos de firmware, atualização, ISP ou bootloader, nem reproduza
@@ -48,7 +49,7 @@ Abra o Warrior por VID + PID + usage page `0xFF1C`; nunca só por VID.
 
 ## Fluxo de engenharia reversa
 
-Ferramentas no projeto (`D:\CLAUDE\TC312Hub`):
+Ferramentas no projeto (`E:\CLAUDE CODE\TC312Hub`; até 19/11/2026 era `D:\CLAUDE\TC312Hub`, perdido):
 
 - `re/capturar.ps1`: se reabre como admin, acha o Warrior pelos descritores (VID/PID)
   com uma sondagem de 1,5 s que é apagada na hora, e captura **só o endereço do
@@ -59,8 +60,8 @@ Ferramentas no projeto (`D:\CLAUDE\TC312Hub`):
   (pacotes com report ID 0x04, separados por ação).
 - `re/tools/evision_decode.py <packets.txt>`: decodifica comando, parâmetro, offset
   e confere o checksum.
-- Rode Python com `D:\CLAUDE\TC312Hub\.venv\Scripts\python.exe -I` (o pacote
-  `hidapi` está nesse venv).
+- Rode Python com `.venv\Scripts\python.exe -I` na raiz do projeto, com o pacote `hidapi`.
+  O venv antigo ficou no D: e precisa ser recriado se for usar as ferramentas de `re/`.
 
 Para cada função nova: capture uma ação isolada → compare com a ação vizinha (diff de
 bytes) → documente em `references/protocolo.md` com o nome da sessão de captura

@@ -1,12 +1,75 @@
 import { useEffect, useState } from "react";
 import { api, type BackupInfo, type DeviceState } from "../api";
+import { PageHead, type OnWrite } from "../App";
 import { Modal } from "../components";
+import { IconCheck, IconDownload, IconFolder, IconRefresh, IconWrench } from "../icons";
+import { formatBytes, type Updater } from "../updater";
 
 function prettyStamp(name: string) {
   const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/.exec(name);
   if (!m) return name;
   const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
-  return d.toLocaleString("pt-BR");
+  return d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+}
+
+function UpdatePanel({ u, version }: { u: Updater; version: string }) {
+  const busy = u.phase === "checking" || u.phase === "downloading" || u.phase === "installing";
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2>Atualizações</h2>
+        <div className="grow" />
+        <span className="faint small num">versão {version || "—"}</span>
+      </div>
+      <div className="panel-body">
+        {u.phase === "available" && (
+          <div className="stack">
+            <div className="field-row">
+              <span className="pill accent">Nova versão {u.version}</span>
+              <span className="faint small">{u.date ? new Date(u.date).toLocaleDateString("pt-BR") : ""}</span>
+            </div>
+            {u.notes && <div className="notes">{u.notes}</div>}
+            <div className="field-row">
+              <button className="btn primary" onClick={u.install}><IconDownload size={16} /> Atualizar agora</button>
+              <span className="faint small">Baixa do GitHub, confere a assinatura, instala e reabre o app.</span>
+            </div>
+          </div>
+        )}
+        {(u.phase === "downloading" || u.phase === "installing") && (
+          <div className="stack">
+            <div className="field-row">
+              <b>{u.phase === "downloading" ? `Baixando ${u.version}` : "Instalando…"}</b>
+              <span className="faint small num">
+                {u.phase === "downloading" && u.total ? `${formatBytes(u.received)} de ${formatBytes(u.total)}` : ""}
+              </span>
+            </div>
+            <div className={`progress${u.progress === undefined || u.phase === "installing" ? " indeterminate" : ""}`}>
+              <i style={{ width: `${Math.round((u.progress ?? 0) * 100)}%` }} />
+            </div>
+            <p className="note" style={{ marginTop: 0 }}>
+              {u.phase === "installing"
+                ? "O app vai fechar, o instalador mostra só uma barra de progresso e o TC312 Hub abre de novo sozinho."
+                : "Não desligue o computador."}
+            </p>
+          </div>
+        )}
+        {(u.phase === "idle" || u.phase === "checking" || u.phase === "current" || u.phase === "error") && (
+          <div className="stack">
+            <div className="field-row">
+              {u.phase === "current" && <><IconCheck size={16} style={{ color: "var(--ok)" }} /><span>Você está na versão mais recente.</span></>}
+              {u.phase === "error" && <span style={{ color: "#ff9fb1" }}>Não consegui verificar: {u.error}</span>}
+              {u.phase === "idle" && <span className="muted">O app procura atualizações sozinho ao abrir e a cada 6 horas.</span>}
+              {u.phase === "checking" && <span className="muted">Procurando…</span>}
+            </div>
+            <div className="field-row">
+              <button className="btn" onClick={u.check} disabled={busy}><IconRefresh size={15} /> Procurar atualização</button>
+              {u.lastChecked && <span className="faint small">última verificação {u.lastChecked.toLocaleTimeString("pt-BR", { timeStyle: "short" })}</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
 }
 
 export function SettingsPage({
@@ -14,11 +77,15 @@ export function SettingsPage({
   connected,
   busy,
   onWrite,
+  updater,
+  version,
 }: {
   device: DeviceState | null;
   connected: boolean;
   busy: boolean;
-  onWrite: (label: string, fn: () => Promise<unknown>) => Promise<boolean>;
+  onWrite: OnWrite;
+  updater: Updater;
+  version: string;
 }) {
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [factory, setFactory] = useState(false);
@@ -29,50 +96,66 @@ export function SettingsPage({
   }, [device]);
 
   return (
-    <section className="content">
-      <div className="section-head"><h2>Ajustes</h2></div>
+    <>
+      <PageHead title="Ajustes" sub="Atualizações, reparo e backups" />
 
-      <div className="panel">
-        <h3>Reparar teclado (padrão de fábrica)</h3>
-        <p className="muted">
-          Regrava o mapa de teclas de fábrica no formato do software oficial, <b>limpa a tabela de cores</b> (inclusive a área que a
-          versão 1.0.0 corrompia) e volta a iluminação para estático branco, brilho máximo, tecla Win liberada. Use se as teclas
-          começarem a abrir atalhos do Windows sozinhas.
-        </p>
-        <button className="danger" disabled={!connected || busy} onClick={() => setFactory(true)}>Reparar teclado</button>
-      </div>
+      <div className="page">
+        <div className="settings-grid">
+          <UpdatePanel u={updater} version={version} />
 
-      <div className="panel">
-        <h3>Backups automáticos</h3>
-        <p className="muted">Antes de cada gravação o app guarda o estado do teclado. Os 40 mais recentes ficam salvos.</p>
-        {backups.length === 0 ? (
-          <p className="muted">Nenhum backup ainda.</p>
-        ) : (
-          <ul className="profile-list">
-            {backups.slice(0, 12).map((b) => (
-              <li key={b.name}>
-                <span>{prettyStamp(b.name)}</span>
-                <span className="muted small">{b.reason}</span>
-                <div className="spacer" />
-                <button className="ghost" disabled={!connected || busy} onClick={() => setRestore(b)}>Restaurar teclas</button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="row-actions mt">
-          <button className="ghost" onClick={() => api.openDataFolder()}>Abrir pasta de dados</button>
+          <section className="panel">
+            <div className="panel-head"><h2>Reparar teclado</h2></div>
+            <div className="panel-body">
+              <p className="muted">
+                Regrava o mapa de teclas de fábrica no formato do software oficial, <b>limpa a tabela de cores</b> (inclusive a área que a
+                versão 1.0.0 corrompia) e volta a iluminação para estático branco, brilho máximo, tecla Win liberada. Use se as teclas
+                começarem a abrir atalhos do Windows sozinhas.
+              </p>
+              <button className="btn danger" style={{ marginTop: 8 }} disabled={!connected || busy} onClick={() => setFactory(true)}>
+                <IconWrench size={16} /> Reparar teclado
+              </button>
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Backups automáticos</h2>
+              <div className="grow" />
+              <button className="btn quiet small" onClick={() => api.openDataFolder()}><IconFolder size={15} /> Abrir pasta</button>
+            </div>
+            <div className="panel-body">
+              <p className="faint small" style={{ marginBottom: 10 }}>Antes de cada gravação o app guarda o estado do teclado. Ficam os 40 mais recentes.</p>
+              {backups.length === 0 ? (
+                <div className="empty"><b>Nenhum backup ainda</b>Aparece aqui depois da primeira gravação.</div>
+              ) : (
+                <ul className="rows">
+                  {backups.map((b) => (
+                    <li key={b.name}>
+                      <div className="grow">
+                        <div className="title num">{prettyStamp(b.name)}</div>
+                        <div className="meta">{b.reason}</div>
+                      </div>
+                      <button className="btn small" disabled={!connected || busy} onClick={() => setRestore(b)}>Restaurar teclas</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head"><h2>Sobre</h2></div>
+            <div className="panel-body">
+              <dl className="facts">
+                <dt>Aplicativo</dt><dd className="num">TC312 Hub {version}</dd>
+                <dt>Teclado</dt><dd>Warrior TC312 Royal Cross (placa EVision 320F:5078)</dd>
+                <dt>Aparelho</dt><dd className="mono faint">{device?.info ?? "—"}</dd>
+                <dt>Mapa ativo</dt><dd>O teclado não informa o mapa de teclas ativo; o app mostra o último que ele mesmo aplicou.</dd>
+                <dt>Código</dt><dd>github.com/HenriqueBenur/tc312-hub</dd>
+              </dl>
+            </div>
+          </section>
         </div>
-      </div>
-
-      <div className="panel">
-        <h3>Sobre</h3>
-        <dl className="facts">
-          <dt>Aplicativo</dt><dd>TC312 Hub 1.0.1</dd>
-          <dt>Teclado</dt><dd>Warrior TC312 Royal Cross (placa EVision 320F:5078)</dd>
-          <dt>Informação do aparelho</dt><dd className="mono small">{device?.info ?? "—"}</dd>
-          <dt>Observação</dt>
-          <dd>O teclado não informa o mapa de teclas ativo; o app mostra o último mapa que ele mesmo aplicou.</dd>
-        </dl>
       </div>
 
       {factory && (
@@ -87,7 +170,7 @@ export function SettingsPage({
             refresh();
           }}
         >
-          <p>Teclas, cores e iluminação voltam ao original. Um backup do estado atual é salvo antes. Macros e perfis não são apagados.</p>
+          <p>Teclas, cores e iluminação voltam ao original e o efeito do app é desligado. Um backup do estado atual é salvo antes. Macros e perfis não são apagados.</p>
           <p>Depois, desconecte e reconecte o cabo do Warrior para o firmware recarregar tudo.</p>
         </Modal>
       )}
@@ -103,9 +186,9 @@ export function SettingsPage({
             refresh();
           }}
         >
-          <p>{prettyStamp(restore.name)} · {restore.reason}</p>
+          <p className="num">{prettyStamp(restore.name)} · {restore.reason}</p>
         </Modal>
       )}
-    </section>
+    </>
   );
 }

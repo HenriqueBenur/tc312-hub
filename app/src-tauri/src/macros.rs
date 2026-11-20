@@ -56,6 +56,9 @@ pub struct MacroEngine {
     playing: Arc<AtomicBool>,
 }
 
+/// Pedido para interromper a macro em andamento (apertar a tecla da macro de novo).
+static CANCEL: AtomicBool = AtomicBool::new(false);
+
 impl MacroEngine {
     pub fn start(initial: Vec<Macro>) -> Self {
         let engine = Self {
@@ -90,13 +93,19 @@ impl MacroEngine {
 
 fn play(m: Macro, playing: Arc<AtomicBool>) {
     if playing.swap(true, Ordering::SeqCst) {
-        return; // já há uma macro rodando
+        // já há uma macro rodando: apertar de novo interrompe (útil com "repetir" alto)
+        CANCEL.store(true, Ordering::SeqCst);
+        return;
     }
+    CANCEL.store(false, Ordering::SeqCst);
     thread::spawn(move || {
         // pequena espera para a tecla de disparo ser solta
         thread::sleep(Duration::from_millis(60));
-        for _ in 0..m.repeat.clamp(1, 100) {
+        'outer: for _ in 0..m.repeat.clamp(1, 100) {
             for s in &m.steps {
+                if CANCEL.load(Ordering::SeqCst) {
+                    break 'outer;
+                }
                 match s {
                     Step::Combo { vks } => {
                         #[cfg(windows)]
@@ -108,10 +117,19 @@ fn play(m: Macro, playing: Arc<AtomicBool>) {
                         #[cfg(not(windows))]
                         let _ = text;
                     }
-                    Step::Delay { ms } => thread::sleep(Duration::from_millis((*ms).min(10_000) as u64)),
+                    Step::Delay { ms } => {
+                        // espera em fatias para a interrupção responder rápido
+                        let mut left = (*ms).min(10_000) as u64;
+                        while left > 0 && !CANCEL.load(Ordering::SeqCst) {
+                            let d = left.min(50);
+                            thread::sleep(Duration::from_millis(d));
+                            left -= d;
+                        }
+                    }
                 }
             }
         }
+        CANCEL.store(false, Ordering::SeqCst);
         playing.store(false, Ordering::SeqCst);
     });
 }
@@ -187,6 +205,8 @@ mod win {
     const WM_USER: u32 = 0x0400;
     const WM_APP_RELOAD: u32 = 0x8001;
     const MOD_NOREPEAT: u32 = 0x4000;
+    /// Também dispara com Shift, Ctrl ou Alt segurados (ex.: correndo com Shift num jogo).
+    const MOD_VARIANTS: [u32; 4] = [0, 0x0004, 0x0002, 0x0001];
     const INPUT_KEYBOARD: u32 = 1;
     const KEYEVENTF_EXTENDEDKEY: u32 = 0x1;
     const KEYEVENTF_KEYUP: u32 = 0x2;
@@ -208,7 +228,7 @@ mod win {
             while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
                 match msg.message {
                     WM_HOTKEY => {
-                        let slot = msg.wparam as u8;
+                        let slot = (msg.wparam % crate::protocol::MACRO_COUNT as usize) as u8;
                         let m = macros.lock().unwrap().iter().find(|m| m.slot == slot).cloned();
                         if let Some(m) = m {
                             play(m, playing.clone());
@@ -222,13 +242,21 @@ mod win {
     }
 
     unsafe fn register_all(macros: &Arc<Mutex<Vec<Macro>>>, status: &Arc<Mutex<Vec<SlotStatus>>>) {
-        for slot in 0..crate::protocol::MACRO_COUNT as i32 {
-            unsafe { UnregisterHotKey(null_mut(), slot) };
+        let n = crate::protocol::MACRO_COUNT as i32;
+        for id in 0..n * MOD_VARIANTS.len() as i32 {
+            unsafe { UnregisterHotKey(null_mut(), id) };
         }
         let list = macros.lock().unwrap().clone();
         let mut st = Vec::new();
-        for m in list.iter().filter(|m| (m.slot as i32) < crate::protocol::MACRO_COUNT as i32 && !m.steps.is_empty()) {
-            let ok = unsafe { RegisterHotKey(null_mut(), m.slot as i32, MOD_NOREPEAT, VK_F13 + m.slot as u32) } != 0;
+        for m in list.iter().filter(|m| (m.slot as i32) < n && !m.steps.is_empty()) {
+            let mut ok = false;
+            for (k, mods) in MOD_VARIANTS.iter().enumerate() {
+                let id = m.slot as i32 + n * k as i32;
+                let r = unsafe { RegisterHotKey(null_mut(), id, MOD_NOREPEAT | mods, VK_F13 + m.slot as u32) } != 0;
+                if k == 0 {
+                    ok = r;
+                }
+            }
             st.push(SlotStatus { slot: m.slot, registered: ok });
         }
         *status.lock().unwrap() = st;

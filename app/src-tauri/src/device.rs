@@ -6,6 +6,8 @@
 //! - as sequências reproduzem as do software oficial (captura 20261116_022340);
 //! - toda escrita confere o eco do teclado (cabeçalho e dados).
 
+use std::time::{Duration, Instant};
+
 use hidapi::{HidApi, HidDevice};
 use serde::Serialize;
 
@@ -72,16 +74,41 @@ impl Warrior {
         HidApi::new().map(|api| api.device_list().any(is_config_channel)).unwrap_or(false)
     }
 
+    /// Descarta relatórios antigos na fila deste handle. No Windows cada handle aberto recebe
+    /// uma cópia de toda resposta do teclado; sem isso, a resposta de outra conversa (ex.: o
+    /// motor de efeitos) seria lida como se fosse desta.
+    fn drain(&self) {
+        let mut b = [0u8; PACKET_LEN];
+        for _ in 0..64 {
+            match self.dev.read_timeout(&mut b, 0) {
+                Ok(n) if n > 0 => continue,
+                _ => break,
+            }
+        }
+    }
+
     fn transact(&self, cmd: Command, len: u8, offset: u16, data: &[u8]) -> Result<[u8; PACKET_LEN], String> {
         let req = protocol::build_packet(cmd, len, offset, data);
+        self.drain();
         self.dev.write(&req).map_err(|e| format!("Falha ao enviar 0x{:02X}: {e}", cmd.code()))?;
+        let deadline = Instant::now() + Duration::from_millis(READ_TIMEOUT_MS as u64);
         let mut resp = [0u8; PACKET_LEN];
-        let n = self
-            .dev
-            .read_timeout(&mut resp, READ_TIMEOUT_MS)
-            .map_err(|e| format!("Falha ao ler resposta de 0x{:02X}: {e}", cmd.code()))?;
-        if !protocol::response_matches(&req, &resp[..n]) {
-            return Err(format!("Resposta inesperada ao comando 0x{:02X}.", cmd.code()));
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now()).as_millis() as i32;
+            if left <= 0 {
+                return Err(format!("O teclado não respondeu ao comando 0x{:02X}.", cmd.code()));
+            }
+            let n = self
+                .dev
+                .read_timeout(&mut resp, left)
+                .map_err(|e| format!("Falha ao ler resposta de 0x{:02X}: {e}", cmd.code()))?;
+            if n == 0 {
+                return Err(format!("O teclado não respondeu ao comando 0x{:02X}.", cmd.code()));
+            }
+            // relatório de outra conversa: ignora e continua esperando o eco deste pedido
+            if protocol::response_matches(&req, &resp[..n]) {
+                break;
+            }
         }
         if cmd.is_write() && resp[8..8 + len as usize] != req[8..8 + len as usize] {
             return Err(format!("O teclado não confirmou os dados do comando 0x{:02X}.", cmd.code()));
@@ -172,6 +199,14 @@ impl Warrior {
         }
         let clean = protocol::sanitize_colors(rgb);
         self.write_block(Command::WriteCustomColors, &clean)
+    }
+
+    /// Quadro do modo direto (0x12 x10, sem BEGIN/END, como na captura do MK1 Elite).
+    /// Não persiste: o teclado só mostra enquanto o app manda quadros.
+    /// Mesma regra das cores: nada depois da entrada 127.
+    pub fn stream_frame(&self, rgb: &[u8]) -> Result<(), String> {
+        let clean = protocol::sanitize_colors(rgb);
+        self.write_block(Command::StreamColors, &clean)
     }
 
     /// Grava o keymap sempre no formato do MK1 Elite (ver `protocol::sanitize_keymap`).
